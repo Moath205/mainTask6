@@ -3,6 +3,7 @@
 #include "mbed.h"
 #include "arm_book_lib.h"
 
+#include "pc_serial_com.h"
 #include "user_interface.h"
 
 #include "code.h"
@@ -17,7 +18,7 @@
 
 //=====[Declaration of private defines]========================================
 
-#define DISPLAY_REFRESH_TIME_MS 1000
+#define DISPLAY_REFRESH_TIME_MS 3000
 
 //=====[Declaration of private data types]=====================================
 
@@ -39,6 +40,8 @@ static bool systemBlockedState = OFF;
 
 static bool codeComplete = false;
 static int numberOfCodeChars = 0;
+static bool FlagTemperature= false;
+static bool FlagGas =false;
 
 //=====[Declarations (prototypes) of private functions]========================
 
@@ -54,9 +57,38 @@ static void userInterfaceDisplayUpdate();
 void userInterfaceInit()
 {
     incorrectCodeLed = OFF;
-    systemBlockedLed = OFF;
-    matrixKeypadInit( SYSTEM_TIME_INCREMENT_MS );
+    systemBlockedLed  = OFF;
+    matrixKeypadInit(SYSTEM_TIME_INCREMENT_MS);
+    displayInit( DISPLAY_CONNECTION_I2C_PCF8574_IO_EXPANDER );
+    // LCD prompt for initial code entry
+    displayCharPositionWrite(0, 3);
+    displayStringWrite("Enter code: ___");
+
+    // Now block until user enters 3 digits + '#'
+    char newCode[CODE_NUMBER_OF_KEYS] = {0};
+    int  idx = 0;
+    while (true) {
+        char key = matrixKeypadUpdate();
+        if (key >= '0' && key <= '9' && idx < CODE_NUMBER_OF_KEYS) {
+            newCode[idx] = key;
+            // update the LCD at positions 12,13,14
+            displayCharPositionWrite(11 + idx, 3);
+            displayStringWrite(key+" ");
+            idx++;
+        }
+        if (key == '#' && idx == CODE_NUMBER_OF_KEYS) {
+            break;  // code entry complete
+        }
+    }
+
+    // save into the global sequence
+    codeWrite(newCode);
+
+    // confirm on LCD
+    displayCharPositionWrite(0, 3);
+    displayStringWrite("Code set.        ");    
     userInterfaceDisplayInit();
+
 }
 
 void userInterfaceUpdate()
@@ -104,30 +136,42 @@ static void userInterfaceMatrixKeypadUpdate()
     static int numberOfHashKeyReleased = 0;
     char keyReleased = matrixKeypadUpdate();
 
-    if( keyReleased != '\0' ) {
+    if (keyReleased == '\0') return;
 
-        if( sirenStateRead() && !systemBlockedStateRead() ) {
-            if( !incorrectCodeStateRead() ) {
-                codeSequenceFromUserInterface[numberOfCodeChars] = keyReleased;
-                numberOfCodeChars++;
-                if ( numberOfCodeChars >= CODE_NUMBER_OF_KEYS ) {
-                    codeComplete = true;
+    // ── ALARM ACTIVE: collect deactivation code ──
+    if( sirenStateRead() && !systemBlockedStateRead() ) {
+        if( !incorrectCodeStateRead() ) {
+            codeSequenceFromUserInterface[numberOfCodeChars] = keyReleased;
+            numberOfCodeChars++;
+            if ( numberOfCodeChars >= CODE_NUMBER_OF_KEYS ) {
+                codeComplete = true;
+                numberOfCodeChars = 0;
+            }
+        } else {
+            if( keyReleased == '#' ) {
+                numberOfHashKeyReleased++;
+                if( numberOfHashKeyReleased >= 2 ) {
+                    numberOfHashKeyReleased = 0;
                     numberOfCodeChars = 0;
-                }
-            } else {
-                if( keyReleased == '#' ) {
-                    numberOfHashKeyReleased++;
-                    if( numberOfHashKeyReleased >= 2 ) {
-                        numberOfHashKeyReleased = 0;
-                        numberOfCodeChars = 0;
-                        codeComplete = false;
-                        incorrectCodeState = OFF;
-                    }
+                    codeComplete = false;
+                    incorrectCodeState = OFF;
                 }
             }
         }
     }
+    // ── ALARM INACTIVE: handle '1' and '9' for status on the LCD ──
+    else {
+        if (keyReleased == '1') {
+            // gas status on row 1
+            FlagGas = true;
+        }
+        else if (keyReleased == '9') {
+            // temperature on row 0
+            FlagTemperature =true;
+        }
+    }
 }
+
 
 static void userInterfaceDisplayInit()
 {
@@ -153,18 +197,40 @@ static void userInterfaceDisplayUpdate()
 
         accumulatedDisplayTime = 0;
 
-        sprintf(temperatureString, "%.0f", temperatureSensorReadCelsius());
-        displayCharPositionWrite ( 12,0 );
-        displayStringWrite( temperatureString );
-        displayCharPositionWrite ( 14,0 );
-        displayStringWrite( "'C" );
+
+        if(FlagTemperature){
+            displayCharPositionWrite ( 12,0 );
+             if ( overTemperatureDetectorStateRead() ) {
+                displayStringWrite( "ON        " );
+            } else {
+                displayStringWrite( "OFF       " );
+            }
+            FlagTemperature = false;
+        }
+        else{
+            sprintf(temperatureString, "%.0f", temperatureSensorReadCelsius());
+            displayCharPositionWrite ( 12,0 );
+            displayStringWrite( temperatureString );
+            displayCharPositionWrite ( 14,0 );
+            displayStringWrite( "'C" );
+        }        
 
         displayCharPositionWrite ( 4,1 );
 
-        if ( gasDetectorStateRead() ) {
-            displayStringWrite( "Detected    " );
-        } else {
-            displayStringWrite( "Not Detected" );
+        if(FlagGas){
+            if ( gasDetectorStateRead() ) {
+                displayStringWrite( "ON               " );
+            } else {
+                displayStringWrite( "OFF              " );
+            }
+            FlagGas = false;
+        }
+        else{
+            if ( gasDetectedRead() ) {
+                displayStringWrite( "Detected    " );
+            } else {
+                displayStringWrite( "Not Detected" );
+            }
         }
 
         displayCharPositionWrite ( 6,2 );

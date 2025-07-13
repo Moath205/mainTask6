@@ -28,9 +28,10 @@
 
 void smartHomeSystemInit()
 {
-    userInterfaceInit();
+    
     fireAlarmInit();
     pcSerialComInit();
+    userInterfaceInit();
 }
 
 void smartHomeSystemUpdate()
